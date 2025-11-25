@@ -1,0 +1,5 @@
+{
+  "name": "Gemini API Routing Dashboard",
+  "description": "A centralized dashboard for monitoring, documentation, and testing of the Gemini API Traefik deployment.",
+  "requestFramePermissions": []
+}
