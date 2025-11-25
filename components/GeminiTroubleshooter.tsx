@@ -1,11 +1,20 @@
 import React, { useState } from 'react';
 import { GoogleGenAI } from "@google/genai";
 import { LogEntry } from '../types';
-import { Sparkles, Send, Loader2, AlertCircle, Terminal, RotateCcw } from 'lucide-react';
+import { Sparkles, Send, Loader2, AlertCircle, Terminal, RotateCcw, Lightbulb } from 'lucide-react';
 
 interface Props {
   logs: LogEntry[];
 }
+
+const SUGGESTED_QUERIES = [
+  "Analyze the recent error logs",
+  "Why is the latency high?",
+  "Check for SSL certificate issues",
+  "Is the Gemini service healthy?",
+  "Are there any 500 or 502 errors?",
+  "Verify the direct routing path"
+];
 
 export const GeminiTroubleshooter: React.FC<Props> = ({ logs }) => {
   const [query, setQuery] = useState('');
@@ -13,8 +22,8 @@ export const GeminiTroubleshooter: React.FC<Props> = ({ logs }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleAsk = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleAsk = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!query.trim()) return;
     
     setLoading(true);
@@ -64,7 +73,7 @@ export const GeminiTroubleshooter: React.FC<Props> = ({ logs }) => {
       }
     } catch (err) {
       console.error(err);
-      setError("Failed to consult Gemini. Please check your API configuration.");
+      setError("Failed to consult Gemini. Please check your API configuration or network connection.");
     } finally {
       setLoading(false);
     }
@@ -76,10 +85,16 @@ export const GeminiTroubleshooter: React.FC<Props> = ({ logs }) => {
     setError(null);
   };
 
+  const selectSuggestion = (q: string) => {
+    setQuery(q);
+    // Optional: Auto-submit on click? 
+    // For now let's just fill it so the user can edit if they want.
+  };
+
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden mb-8 relative shadow-xl">
+    <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden mb-8 relative shadow-xl group">
       {/* Decorative gradient background */}
-      <div className="absolute top-0 right-0 p-20 bg-indigo-500/10 rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none"></div>
+      <div className="absolute top-0 right-0 p-20 bg-indigo-500/10 rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none group-hover:bg-indigo-500/20 transition-colors duration-700"></div>
       
       <div className="p-6 relative z-10">
         <div className="flex items-center gap-3 mb-6">
@@ -88,18 +103,18 @@ export const GeminiTroubleshooter: React.FC<Props> = ({ logs }) => {
           </div>
           <div>
             <h3 className="text-xl font-bold text-slate-200">AI Troubleshooter</h3>
-            <p className="text-sm text-slate-500">Intelligent log analysis using Gemini 2.0 Pro</p>
+            <p className="text-sm text-slate-500">Intelligent log analysis using Gemini 3.0 Pro</p>
           </div>
         </div>
 
-        <form onSubmit={handleAsk} className="relative">
+        <form onSubmit={handleAsk} className="relative z-20">
           <div className="flex gap-3">
             <div className="relative flex-1 group">
                 <input
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="e.g., 'Analyze the recent 500 errors' or 'Why is the response time high?'"
+                  placeholder="Describe the issue or ask for an analysis..."
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-4 pr-12 py-3 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-all placeholder:text-slate-600 shadow-inner"
                 />
             </div>
@@ -115,8 +130,29 @@ export const GeminiTroubleshooter: React.FC<Props> = ({ logs }) => {
           </div>
         </form>
 
+        {/* Suggested Queries */}
+        {!response && !loading && (
+          <div className="mt-4 animate-in fade-in slide-in-from-top-1">
+             <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
+                <Lightbulb className="w-3 h-3 text-yellow-500/70" />
+                <span>Suggested Queries:</span>
+             </div>
+             <div className="flex flex-wrap gap-2">
+                {SUGGESTED_QUERIES.map((q, i) => (
+                  <button
+                    key={i}
+                    onClick={() => selectSuggestion(q)}
+                    className="text-xs bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-indigo-400 border border-slate-800 hover:border-indigo-500/30 rounded-full px-3 py-1.5 transition-all"
+                  >
+                    {q}
+                  </button>
+                ))}
+             </div>
+          </div>
+        )}
+
         {/* Status Indicators */}
-        <div className="mt-4 flex flex-wrap items-center gap-4 text-xs font-mono text-slate-500">
+        <div className="mt-6 flex flex-wrap items-center gap-4 text-xs font-mono text-slate-500 border-t border-slate-800/50 pt-4">
            <div className="flex items-center gap-2 bg-slate-950 px-2 py-1 rounded border border-slate-800">
              <Terminal className="w-3 h-3 text-slate-400" />
              <span>Context: 100 lines</span>
@@ -128,7 +164,7 @@ export const GeminiTroubleshooter: React.FC<Props> = ({ logs }) => {
            {logs.some(l => l.type === 'error') && (
              <div className="flex items-center gap-2 bg-red-950/30 px-2 py-1 rounded border border-red-900/30 text-red-400">
                 <AlertCircle className="w-3 h-3" />
-                <span>Errors Detected in Context</span>
+                <span>Errors Detected in Logs</span>
              </div>
            )}
         </div>
@@ -150,14 +186,15 @@ export const GeminiTroubleshooter: React.FC<Props> = ({ logs }) => {
                    </h4>
                    <button 
                      onClick={handleReset}
-                     className="text-slate-500 hover:text-slate-300 transition-colors p-1 hover:bg-slate-800 rounded"
-                     title="Clear Analysis"
+                     className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors px-2 py-1 hover:bg-slate-800 rounded border border-transparent hover:border-slate-700"
+                     title="Reset Analysis"
                    >
                      <RotateCcw className="w-3 h-3" />
+                     <span>Reset</span>
                    </button>
                </div>
                
-               <div className="p-5">
+               <div className="p-5 max-h-[500px] overflow-y-auto custom-scrollbar">
                    <div className="prose prose-invert prose-sm max-w-none text-slate-300 leading-relaxed whitespace-pre-wrap">
                      {response}
                      {loading && <span className="inline-block w-1.5 h-4 ml-0.5 bg-indigo-500 animate-pulse align-middle rounded-sm"></span>}
