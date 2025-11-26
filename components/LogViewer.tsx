@@ -1,14 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, Trash2, Search, Download, Terminal, Filter, ChevronsDown } from 'lucide-react';
+import { Play, Pause, Trash2, Search, Download, Terminal, Filter, ChevronsDown, Laptop } from 'lucide-react';
 import { LogEntry } from '../types';
+import { invoke } from '@tauri-apps/api/core';
 
 interface Props {
   logs: LogEntry[];
   onClear: () => void;
 }
 
-export const LogViewer: React.FC<Props> = ({ logs, onClear }) => {
-  const [isFrozen, setIsFrozen] = useState(false); // Controls if the VIEW is updating
+// Helper to detect if we are running in Tauri
+const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+export const LogViewer: React.FC<Props> = ({ logs: propLogs, onClear }) => {
+  const [isFrozen, setIsFrozen] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterTypes, setFilterTypes] = useState({
@@ -17,17 +21,59 @@ export const LogViewer: React.FC<Props> = ({ logs, onClear }) => {
     error: true,
   });
   
-  const logsEndRef = useRef<HTMLDivElement>(null);
-  
-  // Local display logs (allows "freezing" the view while backend logs continue)
-  const [displayedLogs, setDisplayedLogs] = useState<LogEntry[]>([]);
+  // State for Real Logs (Tauri Mode)
+  const [realLogs, setRealLogs] = useState<LogEntry[]>([]);
+  const [isNative, setIsNative] = useState(false);
 
-  // Update displayed logs when prop changes, unless frozen
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
-    if (!isFrozen) {
-      setDisplayedLogs(logs);
-    }
-  }, [logs, isFrozen]);
+    setIsNative(isTauri());
+  }, []);
+
+  // Poll for Real Logs if in Tauri mode
+  useEffect(() => {
+    if (!isNative) return;
+
+    const fetchRealLogs = async () => {
+        if (isFrozen) return;
+        try {
+            const output = await invoke<string>('get_docker_logs');
+            const lines = output.split('\n').filter(Boolean);
+            
+            // Filter specifically for Gemini-related entries to match the requested feature
+            const geminiLines = lines.filter(line => 
+                line.includes('gemini') || 
+                line.includes('Gemini') || 
+                line.includes(':5123')
+            );
+
+            const parsedLogs: LogEntry[] = geminiLines.map((raw, idx) => {
+                let type: LogEntry['type'] = 'system';
+                if (raw.includes('GET') || raw.includes('POST') || raw.includes('OPTIONS')) type = 'access';
+                if (raw.includes('ERROR') || raw.includes('level=error') || raw.includes('level=fatal')) type = 'error';
+                
+                return {
+                    id: `real-${idx}`,
+                    timestamp: new Date(), // In a real app we'd parse the timestamp from the log line
+                    raw: raw,
+                    type: type
+                };
+            });
+            setRealLogs(parsedLogs);
+        } catch (err) {
+            console.error("Failed to fetch docker logs:", err);
+        }
+    };
+
+    const interval = setInterval(fetchRealLogs, 2000); // Poll every 2s
+    fetchRealLogs(); // Initial fetch
+    return () => clearInterval(interval);
+  }, [isNative, isFrozen]);
+  
+  // Decide source of truth: Props (Simulation) or Local State (Real)
+  const sourceLogs = isNative ? realLogs : propLogs;
+  const displayedLogs = sourceLogs; 
 
   // Auto-scroll logic
   useEffect(() => {
@@ -106,30 +152,18 @@ export const LogViewer: React.FC<Props> = ({ logs, onClear }) => {
     }
 
     // 3. Handle Standard Access Logs (CLF-like with extended fields)
-    // Format: IP - - [Date] "METHOD URL PROTO" Status Size "Referer" "UA" ...
     const parts = log.raw.split('"');
     if (parts.length >= 3) {
-        // parts[0]: IP - - [Date] 
-        // parts[1]: Request Line (inside quotes)
-        // parts[2]: Status Size (outside quotes)
-        // ... subsequent parts alternate between quoted (odd indices) and unquoted (even indices)
-
         return (
             <span className="font-mono">
-                {/* Preamble (IP, Date) */}
                 <span className="text-slate-500">{parts[0]}</span>
-                
-                {/* Request Line */}
                 <span className="text-indigo-300 font-medium">"{parts[1]}"</span>
-                
-                {/* Status Code & Size (Part 2) */}
                 {(() => {
                     const p2 = parts[2];
                     const statusMatch = p2.match(/(\s)(\d{3})(\s)/);
                     if (statusMatch) {
                         const status = parseInt(statusMatch[2]);
                         const color = status >= 500 ? 'text-red-500 font-bold' : status >= 400 ? 'text-orange-400' : 'text-emerald-500';
-                        // Reconstruct the string with colored status
                         const [before, code, after] = [
                             p2.substring(0, statusMatch.index),
                             statusMatch[0],
@@ -146,28 +180,21 @@ export const LogViewer: React.FC<Props> = ({ logs, onClear }) => {
                     return <span className="text-slate-500">{p2}</span>;
                 })()}
 
-                {/* Remaining Parts (Referer, UA, Router, Service, Duration) */}
                 {parts.slice(3).map((p, i) => {
                     const originalIndex = i + 3;
-                    const isQuoted = originalIndex % 2 !== 0; // Odd indices in split array are content inside quotes
+                    const isQuoted = originalIndex % 2 !== 0; 
 
                     if (isQuoted) {
-                        if (p.includes('gemini-api')) {
-                             return <span key={i} className="text-emerald-400 font-bold">"{p}"</span>;
-                        }
-                        if (p.includes('host.docker.internal')) {
-                             return <span key={i} className="text-blue-400">"{p}"</span>;
-                        }
+                        if (p.includes('gemini-api')) return <span key={i} className="text-emerald-400 font-bold">"{p}"</span>;
+                        if (p.includes('host.docker.internal')) return <span key={i} className="text-blue-400">"{p}"</span>;
                         return <span key={i} className="text-slate-600">"{p}"</span>;
                     }
-                    // Unquoted separators
                     return <span key={i} className="text-slate-600">{p}</span>;
                 })}
             </span>
         );
     }
 
-    // Fallback for unknown formats
     return <span className="text-slate-300 font-mono">{log.raw}</span>;
   };
 
@@ -179,7 +206,19 @@ export const LogViewer: React.FC<Props> = ({ logs, onClear }) => {
             <div className="p-1.5 bg-slate-800 rounded">
                 <Terminal className="w-4 h-4 text-slate-300" />
             </div>
-            <span className="font-mono text-slate-500 hidden sm:inline">docker logs traefik | </span>
+            
+            {isNative ? (
+                <div className="flex items-center gap-2 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded text-blue-400 text-xs font-bold">
+                    <Laptop className="w-3 h-3" />
+                    NATIVE MODE
+                </div>
+            ) : (
+                <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 px-2 py-0.5 rounded text-slate-500 text-xs font-bold">
+                    SIMULATION MODE
+                </div>
+            )}
+            
+            <span className="font-mono text-slate-500 hidden sm:inline">|</span>
             <span className="font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 flex items-center gap-2">
                 <Filter className="w-3 h-3" />
                 grep gemini-api
@@ -187,42 +226,23 @@ export const LogViewer: React.FC<Props> = ({ logs, onClear }) => {
         </div>
         
         <div className="flex items-center gap-2 w-full md:w-auto flex-wrap justify-end">
-            
-            {/* Type Filters */}
             <div className="flex items-center gap-1.5 mr-2">
-                <button
-                    onClick={() => toggleFilter('system')}
-                    className={`px-2 py-1 text-[10px] uppercase font-bold tracking-wider rounded border transition-all ${
-                        filterTypes.system 
-                        ? 'bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20' 
-                        : 'bg-slate-800 text-slate-600 border-slate-700 hover:text-slate-400'
-                    }`}
-                >
-                    System
-                </button>
-                <button
-                    onClick={() => toggleFilter('access')}
-                    className={`px-2 py-1 text-[10px] uppercase font-bold tracking-wider rounded border transition-all ${
-                        filterTypes.access
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20' 
-                        : 'bg-slate-800 text-slate-600 border-slate-700 hover:text-slate-400'
-                    }`}
-                >
-                    Access
-                </button>
-                <button
-                    onClick={() => toggleFilter('error')}
-                    className={`px-2 py-1 text-[10px] uppercase font-bold tracking-wider rounded border transition-all ${
-                        filterTypes.error
-                        ? 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20' 
-                        : 'bg-slate-800 text-slate-600 border-slate-700 hover:text-slate-400'
-                    }`}
-                >
-                    Error
-                </button>
+                {['system', 'access', 'error'].map(type => (
+                    <button
+                        key={type}
+                        onClick={() => toggleFilter(type as any)}
+                        className={`px-2 py-1 text-[10px] uppercase font-bold tracking-wider rounded border transition-all ${
+                            filterTypes[type as keyof typeof filterTypes] 
+                            ? (type === 'error' ? 'bg-red-500/10 text-red-400 border-red-500/20' : type === 'access' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-blue-500/10 text-blue-400 border-blue-500/20')
+                            : 'bg-slate-800 text-slate-600 border-slate-700 hover:text-slate-400'
+                        }`}
+                    >
+                        {type}
+                    </button>
+                ))}
             </div>
 
-            <div className="relative group flex-1 md:w-56 lg:w-64">
+            <div className="relative group flex-1 md:w-48 lg:w-56">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-primary-400 transition-colors" />
                 <input 
                     type="text" 
@@ -238,7 +258,7 @@ export const LogViewer: React.FC<Props> = ({ logs, onClear }) => {
             <button 
                 onClick={() => setAutoScroll(!autoScroll)}
                 className={`p-2 rounded-lg border transition-all ${autoScroll ? 'bg-primary-500/10 text-primary-400 border-primary-500/20' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'}`}
-                title={autoScroll ? "Disable Auto-scroll" : "Enable Auto-scroll"}
+                title="Auto-scroll"
             >
                 <ChevronsDown className="w-4 h-4" />
             </button>
@@ -250,22 +270,16 @@ export const LogViewer: React.FC<Props> = ({ logs, onClear }) => {
             >
                 {isFrozen ? <Play className="w-4 h-4 fill-current" /> : <Pause className="w-4 h-4 fill-current" />}
             </button>
-
-            <button 
-                onClick={onClear}
-                className="p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/20 transition-all"
-                title="Clear Console"
-            >
-                <Trash2 className="w-4 h-4" />
-            </button>
-
-            <button 
-                onClick={downloadLogs}
-                className="p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-primary-400 hover:bg-primary-500/10 hover:border-primary-500/20 transition-all"
-                title="Export Logs"
-            >
-                <Download className="w-4 h-4" />
-            </button>
+            
+            {!isNative && (
+                <button 
+                    onClick={onClear}
+                    className="p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/20 transition-all"
+                    title="Clear Console"
+                >
+                    <Trash2 className="w-4 h-4" />
+                </button>
+            )}
         </div>
       </div>
 
@@ -278,7 +292,11 @@ export const LogViewer: React.FC<Props> = ({ logs, onClear }) => {
                 <div className="h-full flex flex-col items-center justify-center text-slate-600 opacity-50">
                     <Filter className="w-12 h-12 mb-4 opacity-20" />
                     <p className="font-medium">Waiting for logs...</p>
-                    <p className="text-[10px] mt-1">Listening on gemini-api@file</p>
+                    {isNative ? (
+                        <p className="text-[10px] mt-1 text-blue-400">Polling local Docker daemon...</p>
+                    ) : (
+                        <p className="text-[10px] mt-1">Simulated Stream (Web Mode)</p>
+                    )}
                 </div>
             ) : (
                 filteredLogs.map((log) => (
@@ -295,14 +313,11 @@ export const LogViewer: React.FC<Props> = ({ logs, onClear }) => {
             <div className="flex gap-4">
                 <span className={`flex items-center gap-1.5 ${isFrozen ? 'text-orange-400' : 'text-emerald-400'}`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${isFrozen ? 'bg-orange-500' : 'bg-emerald-500 animate-pulse'}`}></span>
-                    {isFrozen ? 'STREAM PAUSED' : 'LIVE STREAM'}
-                </span>
-                <span className={autoScroll ? 'text-blue-400' : 'text-slate-500'}>
-                    Auto-scroll: {autoScroll ? 'ON' : 'OFF'}
+                    {isFrozen ? 'STREAM PAUSED' : (isNative ? 'LIVE DOCKER STREAM' : 'SIMULATED STREAM')}
                 </span>
             </div>
             <div className="flex gap-4">
-                <span>Filter: gemini-api</span>
+                <span>Source: {isNative ? 'Local Docker' : 'Browser Mock'}</span>
                 <span>Buffer: {displayedLogs.length} lines</span>
             </div>
          </div>
